@@ -17,6 +17,7 @@ class LineFollower:
         self.gray = None
         self.lab = None
         self.binary_image = None
+        self.line_image = None
         self.debug_image = None
         self.transparent_overlay = None
         self.fatal = False
@@ -65,7 +66,29 @@ class LineFollower:
         
         return slope, intercept
     
-    def validate_line(self, slope, intercept, binary_image, num_test_points=50, threshold=0.9):
+    def draw_line_with_alpha(self, slope, intercept, color, width, height, alpha=0.1):
+        """绘制具有指定透明度的直线"""
+        # 创建临时透明图层
+        temp_overlay = np.zeros_like(self.transparent_overlay, dtype=np.uint8)
+        
+        # 获取直线点
+        points = self.get_line_points(slope, intercept, width, height)
+        if points:
+            point1, point2 = points
+            x1, y1 = point1
+            x2, y2 = point2
+            
+            # 在临时图层上绘制直线
+            cv2.line(temp_overlay, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+            
+            # 将临时图层以指定透明度混合到主透明图层
+            self.transparent_overlay = cv2.addWeighted(
+                self.transparent_overlay, 1, 
+                temp_overlay, alpha, 
+                0
+            )
+    
+    def validate_line(self, slope, intercept, binary_image, num_test_points=25, threshold=1):
         """改进的直线验证函数 - 只考虑图像内的点"""
         height, width = binary_image.shape
         valid_count = 0
@@ -205,6 +228,7 @@ class LineFollower:
                 total_white = white_pixels1 + white_pixels2
                 
                 if total_white > 0 and white_pixels1/total_white > 0.05 and white_pixels2/total_white > 0.05:
+                    cv2.line(self.line_image, (0, int(intercept)), (width, int(slope * width + intercept)), (255, 0, 0), 2)
                     return slope, intercept
         
         # 3. 如果找不到合适的分割线，返回垂直中线
@@ -251,7 +275,7 @@ class LineFollower:
         
         return region1, region2
     
-    def detect_line_in_region(self, region, num_lines=20, max_attempts=300):
+    def detect_line_in_region(self, region, num_lines=100, max_attempts=1000):
         """优化区域直线检测"""
         # 1. 获取白色像素坐标 (y, x格式)
         white_coords = np.argwhere(region > 0)
@@ -265,7 +289,7 @@ class LineFollower:
         
         # 3. 预计算采样索引
         total_points = len(white_coords)
-        sample_indices = np.random.choice(total_points, size=(max_attempts, 5), replace=True)
+        sample_indices = np.random.choice(total_points, size=(max_attempts, 10), replace=True)
         
         while len(valid_lines) < num_lines and attempts < max_attempts:
             # 获取采样点 (y, x格式)
@@ -283,12 +307,15 @@ class LineFollower:
                 
             # 验证直线有效性
             is_valid, valid_ratio = self.validate_line(slope, intercept, region)
-            
+            # height, width = region.shape[:2]
+
             if is_valid:
                 valid_lines.append((slope, intercept, valid_ratio))
-            
+            #     self.draw_line_with_alpha(slope, intercept, (0, 255, 0), width, height, alpha=0.05)
+            # else:
+            #     self.draw_line_with_alpha(slope, intercept, (0, 0, 255), width, height, alpha=0.2)
+
             attempts += 1
-        
         return valid_lines
     
     def group_similar_lines(self, lines, angle_threshold=0.1, dist_threshold=100):
@@ -346,9 +373,32 @@ class LineFollower:
         merged_lines.sort(key=lambda x: x[2], reverse=True)
         return merged_lines
     
+    def merge_lines(self, lines):
+        """合并多条直线为一条直线（平均斜率和截距）"""
+        if not lines:
+            return None, None, 0.0
+        
+        slopes = []
+        intercepts = []
+        valid_ratios = []
+        
+        for slope, intercept, valid_ratio in lines:
+            slopes.append(slope)
+            intercepts.append(intercept)
+            valid_ratios.append(valid_ratio)
+        
+        # 计算加权平均值（根据有效性比例）
+        weights = np.array(valid_ratios) / np.sum(valid_ratios)
+        avg_slope = np.sum(np.array(slopes) * weights)
+        avg_intercept = np.sum(np.array(intercepts) * weights)
+        avg_valid_ratio = np.mean(valid_ratios)
+        
+        return (avg_slope, avg_intercept, avg_valid_ratio)
+    
     def follow_lines(self, image):
         self.lines_list = []        
         height, width = image.shape[:2]
+        self.line_image = image.copy()
         
         # 添加整体计时
         # total_start = time.time()
@@ -367,15 +417,17 @@ class LineFollower:
         lines_region2 = self.detect_line_in_region(region2)
         
         # 5. 聚类和合并直线
-        merged_lines1 = self.group_similar_lines(lines_region1)
-        merged_lines2 = self.group_similar_lines(lines_region2)
-        
+        merged_lines1 = self.merge_lines(lines_region1)
+        merged_lines2 = self.merge_lines(lines_region2)
+
         # 6. 选择最优的两条直线（每个区域一条）
         selected_lines = []
         if merged_lines1:
-            selected_lines.append(merged_lines1[0])
+            selected_lines.append(merged_lines1)
         if merged_lines2:
-            selected_lines.append(merged_lines2[0])
+            selected_lines.append(merged_lines2)
+
+        # self.line_image = cv2.addWeighted(self.line_image, 1, self.transparent_overlay, 1, 0)
         
         # 如果某个区域没有检测到直线，尝试全局检测
         if len(selected_lines) < 2:
@@ -386,10 +438,9 @@ class LineFollower:
             selected_lines = merged_lines[:2] if len(merged_lines) >= 2 else merged_lines
         
         # 7. 绘制直线和计算中心
-        self.line_image = image.copy()
         center_x = 0
         valid_lines_count = 0
-        
+
         for i, (slope, intercept, valid_ratio) in enumerate(selected_lines):
             # 获取直线在图像边界上的两个点
             points = self.get_line_points(slope, intercept, width, height)
@@ -411,7 +462,7 @@ class LineFollower:
                     self.draw_line_on_overlay(slope, intercept, (0, 255, 255), width, height)
 
                     # 绘制线段
-                    color = (0, 0, 255) if i == 0 else (0, 255, 0)  # 第一条红色，第二条绿色
+                    color = (0, 0, 255)  # 红色
                     cv2.line(self.line_image, (int(x1), int(y1)), (int(x2), int(y2)), color, 4)
 
                     # 绘制线段中点
@@ -433,10 +484,10 @@ class LineFollower:
         # total_time = (time.time() - total_start) * 1000
         # print(f"总处理时间: {total_time:.2f}ms")
         
-        if self.fatal:
+        # if True:
             # 绘制图像中心点
-            cv2.circle(self.line_image, (int(self.cx), int(self.cy)), 10, (255, 0, 0), 2)
-            cv2.circle(self.line_image, (int(center_x), int(self.cy)), 10, (0, 255, 255), 2)
+            # cv2.circle(self.line_image, (int(self.cx), int(self.cy)), 10, (255, 0, 0), 2)
+            # cv2.circle(self.line_image, (int(center_x), int(self.cy)), 10, (0, 255, 255), 2)
         
         error = center_x - self.cx
         return error
@@ -444,12 +495,13 @@ class LineFollower:
 if __name__ == "__main__":
     times = []
     images = ["_1","_2","_3","_copy",""]
-    for i in range(200):
+    # warning = 0
+    for i in range(100):
         # 读取图片
         image = None
         time1 = time.time()
         while image is None:
-            image = cv2.imread("/home/perry_lin/workplace/dog_following_line/image"+images[i%5]+".png")
+            image = cv2.imread("/home/perry_lin/workplace/dog_following_line/image"+images[4]+".png")
             image = cv2.resize(image, (1280, 1024)) 
             if image is None:
                 print("图片读取失败,请检查图片路径")
@@ -461,10 +513,14 @@ if __name__ == "__main__":
         error = line_follower.follow_lines(image)
         times.append(time.time()-time1)
         print(error)
-        if line_follower.fatal:
-            cv2.imshow("Detected Lines "+str(i), line_follower.line_image)
-            cv2.imshow("LAB_mask "+str(i), line_follower.mask)
-            cv2.imshow("Split Line and Regions "+str(i), line_follower.debug_image)
+        # if error > 62 or error < 59:
+        #     warning += 1
+        #     print("Warning: Error out of range:", error)
+
+        # if line_follower.fatal:
+        #     cv2.imshow("Detected Lines "+str(i), line_follower.line_image)
+        #     cv2.imshow("LAB_mask "+str(i), line_follower.mask)
+        #     cv2.imshow("Split Line and Regions "+str(i), line_follower.debug_image)
         # time2 = time.time()
         # print('用时：'+str((time2-time1)*1000)+'ms')
 
@@ -472,10 +528,10 @@ if __name__ == "__main__":
         # cv2.imshow("Detected Lines", line_follower.line_image)
         # cv2.imshow("LAB_mask", line_follower.mask)
         
-        # # 显示调试图像 - 分割线和区域
+        # 显示调试图像 - 分割线和区域
         # cv2.imshow("Split Line and Regions", line_follower.debug_image)
         
-        # # 保存调试图像
+        # 保存调试图像
         # cv2.imwrite("debug_split.jpg", line_follower.debug_image)
         
         # cv2.waitKey(0)
@@ -483,5 +539,6 @@ if __name__ == "__main__":
     print("Average time: "+str(sum(times)*1000/len(times))+"ms")
     print("Max time: "+str(max(times)*1000)+"ms")
     print("Min time: "+str(min(times)*1000)+"ms")
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    # print("Warning count: "+str(warning))
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
