@@ -20,7 +20,6 @@ class LineFollower:
         self.line_image = None
         self.debug_image = None
         self.transparent_overlay = None
-        self.fatal = False
     
     def create_binary_image(self, image):
         """创建二值化图像"""
@@ -28,10 +27,10 @@ class LineFollower:
         self.lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         
         # 2. 优化掩码提取
-        lower_black = np.array([0, 110, 110], dtype=np.uint8)
-        upper_black = np.array([100, 150, 150], dtype=np.uint8)
+        lower_black = np.array([0, 100, 100], dtype=np.uint8)
+        upper_black = np.array([100, 135, 135], dtype=np.uint8)
         self.mask = cv2.inRange(self.lab, lower_black, upper_black)
-        
+
         # 3. 优化形态学操作
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         self.eroded = cv2.morphologyEx(self.mask, cv2.MORPH_OPEN, kernel)
@@ -199,20 +198,16 @@ class LineFollower:
         """优化分割线生成"""
         height, width = binary_image.shape
         
-        # 1. 尝试使用预设分割线
-        # 垂直中线通常是最佳选择
-        if self.strict_avoid_white_line(0, width/2, binary_image):
-            print("使用预设垂直中线")
-            self.fatal = True
-            return 0, width/2
-        
-        # 2. 优化随机采样
+        # 1. 优化随机采样
         attempts = 0
         while attempts < max_attempts:
             attempts += 1
             
             # 使用更高效的随机斜率生成
-            slope = random.uniform(-1, 1)  # 限制斜率范围
+            antislope = random.uniform(-2, 2)  # 限制斜率范围
+            if antislope == 0:
+                continue
+            slope = 1 / antislope
             intercept = random.uniform(0, height)
             
             # 快速预检查
@@ -228,14 +223,12 @@ class LineFollower:
                 total_white = white_pixels1 + white_pixels2
                 
                 if total_white > 0 and white_pixels1/total_white > 0.05 and white_pixels2/total_white > 0.05:
-                    cv2.line(self.line_image, (0, int(intercept)), (width, int(slope * width + intercept)), (255, 0, 0), 2)
+                    # cv2.line(self.line_image, (0, int(intercept)), (width, int(slope * width + intercept)), (255, 0, 0), 2)
                     return slope, intercept
         
-        # 3. 如果找不到合适的分割线，返回垂直中线
-        print("使用默认垂直中线")
-        self.fatal = True
-        return 0, width/2
-    
+        # 2. 如果找不到合适的分割线，返回垂直中线
+        raise Exception("找不到合适的分割线")
+
     def quick_line_check(self, slope, intercept, binary_image):
         """快速检查分割线是否可能有效"""
         height, width = binary_image.shape
@@ -422,27 +415,25 @@ class LineFollower:
 
         # 6. 选择最优的两条直线（每个区域一条）
         selected_lines = []
-        if merged_lines1:
+        if merged_lines1 and merged_lines1[0] and merged_lines1[1]:
             selected_lines.append(merged_lines1)
-        if merged_lines2:
+        if merged_lines2 and merged_lines2[0] and merged_lines2[1]:
             selected_lines.append(merged_lines2)
 
         # self.line_image = cv2.addWeighted(self.line_image, 1, self.transparent_overlay, 1, 0)
         
         # 如果某个区域没有检测到直线，尝试全局检测
         if len(selected_lines) < 2:
-            print("某个区域未检测到直线，尝试全局检测...")
-            self.fatal = True
-            valid_lines = self.detect_line_in_region(binary_image, num_lines=100)
-            merged_lines = self.group_similar_lines(valid_lines)
-            selected_lines = merged_lines[:2] if len(merged_lines) >= 2 else merged_lines
-        
+            raise Exception("未检测到足够的直线")
+
         # 7. 绘制直线和计算中心
         center_x = 0
         valid_lines_count = 0
 
         for i, (slope, intercept, valid_ratio) in enumerate(selected_lines):
             # 获取直线在图像边界上的两个点
+            if not slope:
+                raise Exception("未检测到有效直线")
             points = self.get_line_points(slope, intercept, width, height)
             
             if points:
@@ -457,7 +448,7 @@ class LineFollower:
                 center_x += mid_x
                 valid_lines_count += 1
 
-                if self.fatal:
+                if False:
                     # 绘制分割线
                     self.draw_line_on_overlay(slope, intercept, (0, 255, 255), width, height)
 
@@ -477,17 +468,15 @@ class LineFollower:
             center_x /= valid_lines_count
             # print(f"检测到 {valid_lines_count} 条有效线段")
         else:
-            center_x = self.cx
-            self.fatal = True
-            print("未检测到有效线段")
+            raise Exception("未检测到有效线段")
 
         # total_time = (time.time() - total_start) * 1000
         # print(f"总处理时间: {total_time:.2f}ms")
-        
-        # if True:
+
+        if False:
             # 绘制图像中心点
-            # cv2.circle(self.line_image, (int(self.cx), int(self.cy)), 10, (255, 0, 0), 2)
-            # cv2.circle(self.line_image, (int(center_x), int(self.cy)), 10, (0, 255, 255), 2)
+            cv2.circle(self.line_image, (int(self.cx), int(self.cy)), 10, (255, 0, 0), 2)
+            cv2.circle(self.line_image, (int(center_x), int(self.cy)), 10, (0, 255, 255), 2)
         
         error = center_x - self.cx
         return error
@@ -495,32 +484,40 @@ class LineFollower:
 if __name__ == "__main__":
     times = []
     images = ["_1","_2","_3","_copy",""]
+    retry = False
     # warning = 0
     for i in range(100):
         # 读取图片
         image = None
-        time1 = time.time()
+        if retry:
+            retry = False
+        else:
+            time1 = time.time()
         while image is None:
-            image = cv2.imread("/home/perry_lin/workplace/dog_following_line/image"+images[4]+".png")
+            image = cv2.imread("/home/perry_lin/workplace/dog_following_line/image"+images[2]+".png")
             image = cv2.resize(image, (1280, 1024)) 
             if image is None:
                 print("图片读取失败,请检查图片路径")
-                time.sleep(1)
+                # time.sleep(1)
             else:
                 # print("图片读取成功")
                 break
         line_follower = LineFollower()
-        error = line_follower.follow_lines(image)
+        try:
+            error = line_follower.follow_lines(image)
+        except Exception as e:
+            print("Error:", e)
+            retry = True
+            continue
         times.append(time.time()-time1)
         print(error)
         # if error > 62 or error < 59:
         #     warning += 1
         #     print("Warning: Error out of range:", error)
 
-        # if line_follower.fatal:
-        #     cv2.imshow("Detected Lines "+str(i), line_follower.line_image)
-        #     cv2.imshow("LAB_mask "+str(i), line_follower.mask)
-        #     cv2.imshow("Split Line and Regions "+str(i), line_follower.debug_image)
+        # cv2.imshow("Detected Lines "+str(i), line_follower.line_image)
+        # cv2.imshow("LAB_mask "+str(i), line_follower.mask)
+        # cv2.imshow("Split Line and Regions "+str(i), line_follower.debug_image)
         # time2 = time.time()
         # print('用时：'+str((time2-time1)*1000)+'ms')
 
