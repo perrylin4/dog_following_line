@@ -223,7 +223,7 @@ class LineFollower:
                 total_white = white_pixels1 + white_pixels2
                 
                 if total_white > 0 and white_pixels1/total_white > 0.05 and white_pixels2/total_white > 0.05:
-                    # cv2.line(self.line_image, (0, int(intercept)), (width, int(slope * width + intercept)), (255, 0, 0), 2)
+                    cv2.line(self.line_image, (0, int(intercept)), (width, int(slope * width + intercept)), (255, 0, 0), 2)
                     return slope, intercept
         
         # 2. 如果找不到合适的分割线，返回垂直中线
@@ -448,7 +448,7 @@ class LineFollower:
                 center_x += mid_x
                 valid_lines_count += 1
 
-                if False:
+                if True:
                     # 绘制分割线
                     self.draw_line_on_overlay(slope, intercept, (0, 255, 255), width, height)
 
@@ -473,7 +473,7 @@ class LineFollower:
         # total_time = (time.time() - total_start) * 1000
         # print(f"总处理时间: {total_time:.2f}ms")
 
-        if False:
+        if True:
             # 绘制图像中心点
             cv2.circle(self.line_image, (int(self.cx), int(self.cy)), 10, (255, 0, 0), 2)
             cv2.circle(self.line_image, (int(center_x), int(self.cy)), 10, (0, 255, 255), 2)
@@ -515,8 +515,8 @@ if __name__ == "__main__":
         #     warning += 1
         #     print("Warning: Error out of range:", error)
 
-        # cv2.imshow("Detected Lines "+str(i), line_follower.line_image)
-        # cv2.imshow("LAB_mask "+str(i), line_follower.mask)
+        cv2.imshow("Detected Lines "+str(i), line_follower.line_image)
+        cv2.imshow("LAB_mask "+str(i), line_follower.mask)
         # cv2.imshow("Split Line and Regions "+str(i), line_follower.debug_image)
         # time2 = time.time()
         # print('用时：'+str((time2-time1)*1000)+'ms')
@@ -531,8 +531,8 @@ if __name__ == "__main__":
         # 保存调试图像
         # cv2.imwrite("debug_split.jpg", line_follower.debug_image)
         
-        # cv2.waitKey(0)
-        # cv2.destroyAllWindows()
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
     print("Average time: "+str(sum(times)*1000/len(times))+"ms")
     print("Max time: "+str(max(times)*1000)+"ms")
     print("Min time: "+str(min(times)*1000)+"ms")
