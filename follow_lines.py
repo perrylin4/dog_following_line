@@ -27,8 +27,8 @@ class LineFollower:
         self.lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         
         # 2. 优化掩码提取
-        lower_black = np.array([0, 100, 100], dtype=np.uint8)
-        upper_black = np.array([100, 135, 135], dtype=np.uint8)
+        lower_black = np.array([0, 60, 60], dtype=np.uint8)
+        upper_black = np.array([120, 160, 160], dtype=np.uint8)
         self.mask = cv2.inRange(self.lab, lower_black, upper_black)
 
         # 3. 优化形态学操作
@@ -87,7 +87,7 @@ class LineFollower:
                 0
             )
     
-    def validate_line(self, slope, intercept, binary_image, num_test_points=25, threshold=1):
+    def validate_line(self, slope, intercept, binary_image, num_test_points=50, threshold=0.95):
         """改进的直线验证函数 - 只考虑图像内的点"""
         height, width = binary_image.shape
         valid_count = 0
@@ -208,7 +208,7 @@ class LineFollower:
             if antislope == 0:
                 continue
             slope = 1 / antislope
-            intercept = random.uniform(0, height)
+            intercept = random.uniform(0, height) - slope * random.uniform(0, width)
             
             # 快速预检查
             if not self.quick_line_check(slope, intercept, binary_image):
@@ -225,9 +225,10 @@ class LineFollower:
                 if total_white > 0 and white_pixels1/total_white > 0.05 and white_pixels2/total_white > 0.05:
                     cv2.line(self.line_image, (0, int(intercept)), (width, int(slope * width + intercept)), (255, 0, 0), 2)
                     return slope, intercept
-        
         # 2. 如果找不到合适的分割线，返回垂直中线
-        raise Exception("找不到合适的分割线")
+        print("未找到合适的分割线，使用垂直中线")
+        cv2.line(self.line_image, (width//2, 0), (width//2, height), (255, 0, 0), 2)
+        return 0, width // 2  # 垂直中线，斜率为0，截距为图像宽度的一半
 
     def quick_line_check(self, slope, intercept, binary_image):
         """快速检查分割线是否可能有效"""
@@ -268,7 +269,7 @@ class LineFollower:
         
         return region1, region2
     
-    def detect_line_in_region(self, region, num_lines=100, max_attempts=1000):
+    def detect_line_in_region(self, region, num_lines=200, max_attempts=1000):
         """优化区域直线检测"""
         # 1. 获取白色像素坐标 (y, x格式)
         white_coords = np.argwhere(region > 0)
@@ -424,7 +425,7 @@ class LineFollower:
         
         # 如果某个区域没有检测到直线，尝试全局检测
         if len(selected_lines) < 2:
-            raise Exception("未检测到足够的直线")
+            return 0.0  # 没有足够的直线进行跟踪
 
         # 7. 绘制直线和计算中心
         center_x = 0
@@ -468,7 +469,7 @@ class LineFollower:
             center_x /= valid_lines_count
             # print(f"检测到 {valid_lines_count} 条有效线段")
         else:
-            raise Exception("未检测到有效线段")
+            return 0.0  # 没有有效线段，无法计算误差
 
         # total_time = (time.time() - total_start) * 1000
         # print(f"总处理时间: {total_time:.2f}ms")
@@ -482,60 +483,146 @@ class LineFollower:
         return error
 
 if __name__ == "__main__":
-    times = []
-    images = ["_1","_2","_3","_copy",""]
-    retry = False
-    # warning = 0
-    for i in range(100):
-        # 读取图片
-        image = None
-        if retry:
-            retry = False
-        else:
-            time1 = time.time()
-        while image is None:
-            image = cv2.imread("/home/perry_lin/workplace/dog_following_line/image"+images[2]+".png")
-            image = cv2.resize(image, (1280, 1024)) 
-            if image is None:
-                print("图片读取失败,请检查图片路径")
-                # time.sleep(1)
-            else:
-                # print("图片读取成功")
-                break
-        line_follower = LineFollower()
+    # 输入视频路径
+    input_video_path = "/home/perry_lin/workplace/dog_following_line/sample.mp4"  # 修改为你的输入视频路径
+    
+    # 输出视频路径
+    output_video_path = "/home/perry_lin/workplace/dog_following_line/output.mp4"  # 修改为你的输出视频路径
+    binary_output_path = "/home/perry_lin/workplace/dog_following_line/binary_output.mp4"
+    
+    # 打开输入视频
+    cap = cv2.VideoCapture(input_video_path)
+    if not cap.isOpened():
+        print(f"无法打开视频文件: {input_video_path}")
+        exit()
+    
+    # 获取视频属性
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    print(f"视频信息: {frame_width}x{frame_height}, {fps} FPS, 总帧数: {total_frames}")
+    
+    # 创建输出视频
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 使用MP4V编解码器
+    out = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
+    
+    # 修复二值图像输出 - 需要转换为三通道
+    binary_out = cv2.VideoWriter(binary_output_path, fourcc, fps, (frame_width, frame_height))
+    
+    # 初始化LineFollower
+    line_follower = LineFollower()
+    
+    # 处理统计
+    processed_frames = 0
+    skipped_frames = 0
+    start_time = time.time()
+    
+    # 创建窗口用于显示结果
+    cv2.namedWindow("Processed Frame", cv2.WINDOW_NORMAL)
+    cv2.namedWindow("Binary Image", cv2.WINDOW_NORMAL)
+    
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        # 调整帧大小（如果需要）
+        if frame.shape[1] != frame_width or frame.shape[0] != frame_height:
+            frame = cv2.resize(frame, (frame_width, frame_height))
+        
         try:
-            error = line_follower.follow_lines(image)
+            # 处理当前帧
+            error = line_follower.follow_lines(frame)
+            
+            # 获取处理后的图像
+            processed_frame = line_follower.line_image.copy()
+            
+            # 修复二值图像输出 - 转换为三通道
+            if line_follower.binary_image is not None:
+                # 将单通道二值图像转换为三通道
+                binary_processed_frame = cv2.cvtColor(line_follower.binary_image, cv2.COLOR_GRAY2BGR)
+            else:
+                # 如果没有二值图像，创建一个黑色帧
+                binary_processed_frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
+            
+            # 添加处理信息
+            cv2.putText(processed_frame, f"Frame: {processed_frames+1}/{total_frames}", 
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(processed_frame, f"Error: {error:.2f}", 
+                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # 在二值图像上添加信息
+            cv2.putText(binary_processed_frame, f"Frame: {processed_frames+1}/{total_frames}", 
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(binary_processed_frame, f"Error: {error:.2f}", 
+                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # 写入输出视频
+            out.write(processed_frame)
+            binary_out.write(binary_processed_frame)
+            
+            # 显示处理进度
+            processed_frames += 1
+            if processed_frames % 10 == 0:
+                elapsed = time.time() - start_time
+                fps = processed_frames / elapsed
+                remaining = (total_frames - processed_frames) / fps if fps > 0 else 0
+                print(f"已处理: {processed_frames}/{total_frames} 帧 | "
+                      f"速度: {fps:.1f} FPS | "
+                      f"剩余时间: {remaining:.1f}秒")
+            
+            # 实时显示处理结果
+            cv2.imshow("Processed Frame", processed_frame)
+            cv2.imshow("Binary Image", binary_processed_frame)
+            
+            # 按q键退出
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+                
         except Exception as e:
-            print("Error:", e)
-            retry = True
+            print(f"处理帧 {processed_frames+1} 时出错: {str(e)}")
+            skipped_frames += 1
+            
+            # 写入原始帧（或错误信息帧）
+            error_frame = frame.copy()
+            cv2.putText(error_frame, f"ERROR: {str(e)}", 
+                        (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            out.write(error_frame)
+            
+            # 写入二值图像错误帧（黑色背景）
+            binary_error_frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
+            cv2.putText(binary_error_frame, f"ERROR: {str(e)}", 
+                        (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            binary_out.write(binary_error_frame)
+            
+            # 显示错误帧
+            cv2.imshow("Processed Frame", error_frame)
+            cv2.imshow("Binary Image", binary_error_frame)
+            
+            # 按q键退出
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+            
+            processed_frames += 1
             continue
-        times.append(time.time()-time1)
-        print(error)
-        # if error > 62 or error < 59:
-        #     warning += 1
-        #     print("Warning: Error out of range:", error)
-
-        cv2.imshow("Detected Lines "+str(i), line_follower.line_image)
-        cv2.imshow("LAB_mask "+str(i), line_follower.mask)
-        # cv2.imshow("Split Line and Regions "+str(i), line_follower.debug_image)
-        # time2 = time.time()
-        # print('用时：'+str((time2-time1)*1000)+'ms')
-
-        # # 显示结果
-        # cv2.imshow("Detected Lines", line_follower.line_image)
-        # cv2.imshow("LAB_mask", line_follower.mask)
-        
-        # 显示调试图像 - 分割线和区域
-        # cv2.imshow("Split Line and Regions", line_follower.debug_image)
-        
-        # 保存调试图像
-        # cv2.imwrite("debug_split.jpg", line_follower.debug_image)
-        
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-    print("Average time: "+str(sum(times)*1000/len(times))+"ms")
-    print("Max time: "+str(max(times)*1000)+"ms")
-    print("Min time: "+str(min(times)*1000)+"ms")
-    # print("Warning count: "+str(warning))
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
+    
+    # 释放资源
+    cap.release()
+    out.release()
+    binary_out.release()
+    cv2.destroyAllWindows()
+    
+    # 打印处理摘要
+    elapsed_time = time.time() - start_time
+    avg_fps = processed_frames / elapsed_time if elapsed_time > 0 else 0
+    
+    print("\n处理完成!")
+    print(f"总帧数: {total_frames}")
+    print(f"成功处理: {processed_frames - skipped_frames} 帧")
+    print(f"跳过: {skipped_frames} 帧")
+    print(f"总耗时: {elapsed_time:.2f} 秒")
+    print(f"平均处理速度: {avg_fps:.2f} FPS")
+    print(f"输出视频已保存至: {output_video_path}")
+    print(f"二值图像视频已保存至: {binary_output_path}")
