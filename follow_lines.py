@@ -87,7 +87,7 @@ class LineFollower:
                 0
             )
     
-    def validate_line(self, slope, intercept, binary_image, num_test_points=50, threshold=0.95):
+    def validate_line(self, slope, intercept, binary_image, num_test_points=50, threshold=0.9):
         """改进的直线验证函数 - 只考虑图像内的点"""
         height, width = binary_image.shape
         valid_count = 0
@@ -484,7 +484,7 @@ class LineFollower:
 
 if __name__ == "__main__":
     # 输入视频路径
-    input_video_path = "/home/perry_lin/workplace/dog_following_line/sample.mp4"  # 修改为你的输入视频路径
+    input_video_path = "/home/perry_lin/workplace/dog_following_line/noise.mp4"  # 修改为你的输入视频路径
     
     # 输出视频路径
     output_video_path = "/home/perry_lin/workplace/dog_following_line/output.mp4"  # 修改为你的输出视频路径
